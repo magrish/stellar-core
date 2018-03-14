@@ -279,7 +279,7 @@ Upgrades::isValid(uint64_t closeTime, UpgradeType const& upgrade,
         {
             res = mParams.mBaseFee && (newFee == *mParams.mBaseFee);
         }
-        res = res && (newFee != 0);
+        res = res;
     }
     break;
     case LEDGER_UPGRADE_MAX_TX_SET_SIZE:
@@ -299,7 +299,7 @@ Upgrades::isValid(uint64_t closeTime, UpgradeType const& upgrade,
         {
             res = mParams.mBaseReserve && (newReserve == *mParams.mBaseReserve);
         }
-        res = res && (newReserve != 0);
+        res = res;
     }
     break;
     default:
