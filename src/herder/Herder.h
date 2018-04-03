@@ -55,6 +55,9 @@ class Herder
     // How many ledgers in the past we keep track of
     static uint32 const MAX_SLOTS_TO_REMEMBER;
 
+    // Threshold used to filter out irrelevant events.
+    static std::chrono::nanoseconds const TIMERS_THRESHOLD_NANOSEC;
+
     static std::unique_ptr<Herder> create(Application& app);
 
     enum State
@@ -71,6 +74,8 @@ class Herder
         TX_STATUS_ERROR,
         TX_STATUS_COUNT
     };
+
+    static const char* TX_STATUS_STRING[TX_STATUS_COUNT];
 
     enum EnvelopeStatus
     {

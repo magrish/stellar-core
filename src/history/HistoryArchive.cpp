@@ -7,7 +7,6 @@
 // else.
 #include "util/asio.h"
 #include "history/HistoryArchive.h"
-#include "StellarCoreVersion.h"
 #include "bucket/Bucket.h"
 #include "bucket/BucketList.h"
 #include "crypto/Hex.h"
@@ -15,6 +14,7 @@
 #include "history/HistoryManager.h"
 #include "lib/util/format.h"
 #include "main/Application.h"
+#include "main/StellarCoreVersion.h"
 #include "process/ProcessManager.h"
 #include "util/Fs.h"
 #include "util/Logging.h"
@@ -34,6 +34,22 @@ namespace stellar
 {
 
 unsigned const HistoryArchiveState::HISTORY_ARCHIVE_STATE_VERSION = 1;
+
+template <typename... Tokens>
+std::string
+formatString(std::string const& templateString, Tokens const&... tokens)
+{
+    try
+    {
+        return fmt::format(templateString, tokens...);
+    }
+    catch (fmt::FormatError const& ex)
+    {
+        CLOG(ERROR, "History") << "failed to format string \"" << templateString
+                               << "\":" << ex.what();
+        throw std::runtime_error("failed to format command string");
+    }
+}
 
 bool
 HistoryArchiveState::futuresAllReady() const
@@ -264,7 +280,7 @@ HistoryArchiveState::HistoryArchiveState() : server(STELLAR_CORE_VERSION)
 }
 
 HistoryArchiveState::HistoryArchiveState(uint32_t ledgerSeq,
-                                         BucketList& buckets)
+                                         BucketList const& buckets)
     : server(STELLAR_CORE_VERSION), currentLedger(ledgerSeq)
 {
     for (uint32_t i = 0; i < BucketList::kNumLevels; ++i)
@@ -320,7 +336,7 @@ HistoryArchive::getFileCmd(std::string const& remote,
 {
     if (mGetCmd.empty())
         return "";
-    return fmt::format(mGetCmd, remote, local);
+    return formatString(mGetCmd, remote, local);
 }
 
 std::string
@@ -329,7 +345,7 @@ HistoryArchive::putFileCmd(std::string const& local,
 {
     if (mPutCmd.empty())
         return "";
-    return fmt::format(mPutCmd, local, remote);
+    return formatString(mPutCmd, local, remote);
 }
 
 std::string
@@ -337,6 +353,6 @@ HistoryArchive::mkdirCmd(std::string const& remoteDir) const
 {
     if (mMkdirCmd.empty())
         return "";
-    return fmt::format(mMkdirCmd, remoteDir);
+    return formatString(mMkdirCmd, remoteDir);
 }
 }

@@ -25,10 +25,8 @@ namespace stellar
 
 using namespace std;
 
-Simulation::Simulation(Mode mode, Hash const& networkID,
-                       std::function<Config()> confGen)
-    : LoadGenerator(networkID)
-    , mVirtualClockMode(mode != OVER_TCP)
+Simulation::Simulation(Mode mode, Hash const& networkID, ConfigGen confGen)
+    : mVirtualClockMode(mode != OVER_TCP)
     , mClock(mVirtualClockMode ? VirtualClock::VIRTUAL_TIME
                                : VirtualClock::REAL_TIME)
     , mMode(mode)
@@ -175,7 +173,7 @@ Simulation::dropConnection(NodeID initiator, NodeID acceptor)
             auto& cAcceptor = mNodes[acceptor].mApp->getConfig();
 
             auto peer = iApp->getOverlayManager().getConnectedPeer(
-                "127.0.0.1", cAcceptor.PEER_PORT);
+                PeerBareAddress{"127.0.0.1", cAcceptor.PEER_PORT});
             if (peer)
             {
                 peer->drop(true);
@@ -229,9 +227,8 @@ Simulation::addTCPConnection(NodeID initiator, NodeID acceptor)
     {
         throw runtime_error("PEER_PORT cannot be set to 0");
     }
-    PeerRecord pr{"127.0.0.1", to->getConfig().PEER_PORT,
-                  from->getClock().now()};
-    from->getOverlayManager().connectTo(pr);
+    auto address = PeerBareAddress{"127.0.0.1", to->getConfig().PEER_PORT};
+    from->getOverlayManager().connectTo(address);
 }
 
 void
@@ -241,7 +238,7 @@ Simulation::startAllNodes()
     {
         auto app = it.second.mApp;
         app->start();
-        updateMinBalance(*app);
+        app->getLoadGenerator().updateMinBalance();
     }
 
     for (auto const& pair : mPendingConnections)
@@ -477,9 +474,10 @@ Simulation::crankForAtLeast(VirtualClock::duration seconds, bool finalCrank)
 }
 
 void
-Simulation::crankUntilSync(VirtualClock::duration timeout, bool finalCrank)
+Simulation::crankUntilSync(Application& app, VirtualClock::duration timeout,
+                           bool finalCrank)
 {
-    crankUntil([&]() { return this->accountsOutOfSyncWithDb().empty(); },
+    crankUntil([&]() { return this->accountsOutOfSyncWithDb(app).empty(); },
                timeout, finalCrank);
 }
 
@@ -564,124 +562,30 @@ Simulation::crankUntil(VirtualClock::time_point timePoint, bool finalCrank)
     }
 }
 
-void
-Simulation::execute(TxInfo transaction)
+vector<LoadGenerator::TestAccountPtr>
+Simulation::accountsOutOfSyncWithDb(Application& mainApp)
 {
-    // Execute on the first node
-    bool res = transaction.execute(*mNodes.begin()->second.mApp);
-    if (!res)
-    {
-        CLOG(DEBUG, "Simulation") << "Failed execution in simulation";
-    }
-}
-
-void
-Simulation::executeAll(vector<TxInfo> const& transactions)
-{
-    for (auto& tx : transactions)
-    {
-        execute(tx);
-    }
-}
-
-chrono::seconds
-Simulation::executeStressTest(size_t nTransactions, int injectionRatePerSec,
-                              function<TxInfo(size_t)> generatorFn)
-{
-    size_t iTransactions = 0;
-    auto startTime = chrono::system_clock::now();
-    chrono::system_clock::duration signingTime(0);
-    while (iTransactions < nTransactions)
-    {
-        auto elapsed = chrono::duration_cast<chrono::microseconds>(
-            chrono::system_clock::now() - startTime);
-        auto targetTxs = min(
-            nTransactions, static_cast<size_t>(elapsed.count() *
-                                               injectionRatePerSec / 1000000));
-
-        if (iTransactions == targetTxs)
-        {
-            // When running on a real clock, this is a spin loop that waits for
-            // the next event to trigger, or for the next network message.
-            //
-            // When running on virtual time, this line is never hit unless the
-            // injection is below what the network can absorb, and there is
-            // nothing do to but wait for the next injection.
-            std::this_thread::sleep_for(chrono::milliseconds(50));
-        }
-        else
-        {
-            LOG(INFO) << "Injecting txs " << (targetTxs - iTransactions)
-                      << " transactions (" << iTransactions << "..."
-                      << targetTxs << " out of " << nTransactions << ")";
-            auto tBegin = chrono::system_clock::now();
-
-            for (; iTransactions < targetTxs; iTransactions++)
-                execute(generatorFn(iTransactions));
-
-            auto t = (chrono::system_clock::now() - tBegin);
-            signingTime += t;
-        }
-
-        crankAllNodes(1);
-    }
-
-    LOG(INFO) << "executeStressTest signingTime: "
-              << chrono::duration_cast<chrono::seconds>(signingTime).count();
-    return chrono::duration_cast<chrono::seconds>(signingTime);
-}
-
-vector<Simulation::AccountInfoPtr>
-Simulation::accountsOutOfSyncWithDb()
-{
-    vector<AccountInfoPtr> result;
+    vector<LoadGenerator::TestAccountPtr> result;
     int iApp = 0;
-    int64_t totalOffsets = 0;
+
     for (auto const& p : mNodes)
     {
         iApp++;
+        vector<LoadGenerator::TestAccountPtr> res;
         auto app = p.second.mApp;
-        for (auto accountIt = mAccounts.begin() + 1;
-             accountIt != mAccounts.end(); accountIt++)
+        res = mainApp.getLoadGenerator().checkAccountSynced(app->getDatabase());
+        if (!res.empty())
         {
-            auto account = *accountIt;
-            AccountFrame::pointer accountFrame;
-            accountFrame = AccountFrame::loadAccount(
-                account->mKey.getPublicKey(), app->getDatabase());
-            int64_t offset;
-            if (accountFrame)
-            {
-                offset = accountFrame->getBalance() -
-                         static_cast<int64_t>(account->mBalance);
-                account->mSeq = accountFrame->getSeqNum();
-            }
-            else
-            {
-                offset = -1;
-            }
-            if (offset != 0)
-            {
-                LOG(DEBUG) << "On node " << iApp << ", account " << account->mId
-                           << " is off by " << (offset) << "\t(has "
-                           << (accountFrame ? accountFrame->getBalance() : 0)
-                           << " should have " << account->mBalance << ")";
-                totalOffsets += abs(offset);
-                result.push_back(account);
-            }
+            LOG(DEBUG) << "On node " << iApp
+                       << " some accounts are not in sync.";
+        }
+        else
+        {
+            result.insert(result.end(), res.begin(), res.end());
         }
     }
-    LOG(INFO)
-        << "Ledger has not yet caught up to the simulation. totalOffsets: "
-        << totalOffsets;
+    LOG(INFO) << "Ledger has not yet caught up to the simulation.";
     return result;
-}
-
-bool
-Simulation::loadAccount(AccountInfo& account)
-{
-    // assumes all nodes are in sync
-    auto app = mNodes.begin()->second.mApp;
-    return LoadGenerator::loadAccount(*app, account);
 }
 
 Config
@@ -689,7 +593,7 @@ Simulation::newConfig()
 {
     if (mConfigGen)
     {
-        return mConfigGen();
+        return mConfigGen(mConfigCount++);
     }
     else
     {

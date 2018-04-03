@@ -9,7 +9,6 @@
 // first to include <windows.h> -- so we try to include it before everything
 // else.
 #include "util/asio.h"
-#include "StellarCoreVersion.h"
 #include "bucket/Bucket.h"
 #include "bucket/BucketManager.h"
 #include "crypto/SHA.h"
@@ -30,6 +29,7 @@
 #include "main/ExternalQueue.h"
 #include "main/Maintainer.h"
 #include "main/NtpSynchronizationChecker.h"
+#include "main/StellarCoreVersion.h"
 #include "medida/counter.h"
 #include "medida/meter.h"
 #include "medida/metrics_registry.h"
@@ -235,6 +235,7 @@ ApplicationImpl::getJsonInfo()
     info["ledger"]["version"] = lcl.header.ledgerVersion;
     info["ledger"]["baseFee"] = lcl.header.baseFee;
     info["ledger"]["baseReserve"] = lcl.header.baseReserve;
+    info["ledger"]["maxTxSetSize"] = lcl.header.maxTxSetSize;
     info["ledger"]["age"] = (int)lm.secondsSinceLastLedgerClose();
     info["peers"]["pending_count"] = getOverlayManager().getPendingPeersCount();
     info["peers"]["authenticated_count"] =
@@ -472,11 +473,14 @@ ApplicationImpl::manualClose()
 }
 
 void
-ApplicationImpl::generateLoad(uint32_t nAccounts, uint32_t nTxs,
-                              uint32_t txRate, bool autoRate)
+ApplicationImpl::generateLoad(bool isCreate, uint32_t nAccounts, uint32_t nTxs,
+                              uint32_t txRate, uint32_t batchSize,
+                              bool autoRate)
 {
     getMetrics().NewMeter({"loadgen", "run", "start"}, "run").Mark();
-    getLoadGenerator().generateLoad(*this, nAccounts, nTxs, txRate, autoRate);
+    getLoadGenerator().clear();
+    getLoadGenerator().generateLoad(isCreate, nAccounts, nTxs, txRate,
+                                    batchSize, autoRate);
 }
 
 LoadGenerator&
@@ -484,7 +488,7 @@ ApplicationImpl::getLoadGenerator()
 {
     if (!mLoadGenerator)
     {
-        mLoadGenerator = make_unique<LoadGenerator>(getNetworkID());
+        mLoadGenerator = make_unique<LoadGenerator>(*this);
     }
     return *mLoadGenerator;
 }
@@ -607,6 +611,20 @@ ApplicationImpl::syncAllMetrics()
     mHerder->syncMetrics();
     mLedgerManager->syncMetrics();
     syncOwnMetrics();
+}
+
+void
+ApplicationImpl::clearMetrics(std::string const& domain)
+{
+    MetricResetter resetter;
+    auto const& metrics = mMetrics->GetAllMetrics();
+    for (auto const& kv : metrics)
+    {
+        if (domain.empty() || kv.first.domain() == domain)
+        {
+            kv.second->Process(resetter);
+        }
+    }
 }
 
 TmpDirManager&

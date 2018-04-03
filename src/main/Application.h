@@ -12,7 +12,6 @@
 
 namespace asio
 {
-class io_service;
 }
 namespace medida
 {
@@ -185,6 +184,9 @@ class Application
     // Call syncOwnMetrics on self and syncMetrics all objects owned by App.
     virtual void syncAllMetrics() = 0;
 
+    // Clear all metrics
+    virtual void clearMetrics(std::string const& domain) = 0;
+
     // Get references to each of the "subsystem" objects.
     virtual TmpDirManager& getTmpDirManager() = 0;
     virtual LedgerManager& getLedgerManager() = 0;
@@ -231,8 +233,9 @@ class Application
 
     // If config.ARTIFICIALLY_GENERATE_LOAD_FOR_TESTING=true, generate some load
     // against the current application.
-    virtual void generateLoad(uint32_t nAccounts, uint32_t nTxs,
-                              uint32_t txRate, bool autoRate) = 0;
+    virtual void generateLoad(bool isCreate, uint32_t nAccounts, uint32_t nTxs,
+                              uint32_t txRate, uint32_t batchSize,
+                              bool autoRate) = 0;
 
     // Access the load generator for manual operation.
     virtual LoadGenerator& getLoadGenerator() = 0;

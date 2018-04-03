@@ -170,6 +170,8 @@ findOrAdd(HerderImpl::AccountTxMap& acc, AccountID const& aid)
 void
 HerderImpl::valueExternalized(uint64 slotIndex, StellarValue const& value)
 {
+    // record metrics
+    getHerderSCPDriver().recordSCPExecutionMetrics(slotIndex);
     updateSCPCounters();
 
     // called both here and at the end (this one is in case of an exception)
@@ -798,6 +800,7 @@ HerderImpl::triggerNextLedger(uint32_t ledgerSeqToTrigger)
         }
     }
 
+    getHerderSCPDriver().recordSCPEvent(slotIndex, true);
     mHerderSCPDriver.nominate(slotIndex, newProposedValue, proposedSet,
                               lcl.header.scpValue);
 }
@@ -1102,12 +1105,12 @@ HerderImpl::updatePendingTransactions(
 void
 HerderImpl::herderOutOfSync()
 {
-    CLOG(INFO, "Herder") << "Lost track of consensus";
+    CLOG(WARNING, "Herder") << "Lost track of consensus";
 
     Json::Value v;
     dumpInfo(v, 20);
     std::string s = v.toStyledString();
-    CLOG(INFO, "Herder") << "Out of sync context: " << s;
+    CLOG(WARNING, "Herder") << "Out of sync context: " << s;
 
     mSCPMetrics.mLostSync.Mark();
     mHerderSCPDriver.lostSync();

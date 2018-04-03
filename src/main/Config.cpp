@@ -4,13 +4,14 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "main/Config.h"
-#include "StellarCoreVersion.h"
 #include "crypto/Hex.h"
 #include "crypto/KeyUtils.h"
 #include "history/HistoryArchive.h"
 #include "ledger/LedgerManager.h"
 #include "main/ExternalQueue.h"
+#include "main/StellarCoreVersion.h"
 #include "scp/LocalNode.h"
+#include "util/Fs.h"
 #include "util/Logging.h"
 #include "util/types.h"
 
@@ -22,7 +23,7 @@ namespace stellar
 {
 using xdr::operator<;
 
-const uint32 Config::CURRENT_LEDGER_PROTOCOL_VERSION = 9;
+const uint32 Config::CURRENT_LEDGER_PROTOCOL_VERSION = 10;
 
 Config::Config() : NODE_SEED(SecretKey::random())
 {
@@ -67,7 +68,7 @@ Config::Config() : NODE_SEED(SecretKey::random())
     TARGET_PEER_CONNECTIONS = 8;
     MAX_ADDITIONAL_PEER_CONNECTIONS = -1;
     MAX_PEER_CONNECTIONS = 12;
-    MAX_PENDING_CONNECTIONS = 5000;
+    MAX_PENDING_CONNECTIONS = 500;
     PEER_AUTHENTICATION_TIMEOUT = 2;
     PEER_TIMEOUT = 30;
     PREFERRED_PEERS_ONLY = false;
@@ -527,6 +528,17 @@ Config::load(std::string const& filename)
             static_cast<unsigned short>(MAX_ADDITIONAL_PEER_CONNECTIONS +
                                         TARGET_PEER_CONNECTIONS));
 
+        // ensure that max pending connections is not above what the system
+        // supports
+        MAX_PENDING_CONNECTIONS = static_cast<unsigned short>(
+            std::min<int>(MAX_PENDING_CONNECTIONS, fs::getMaxConnections()));
+
+        // enforce TARGET_PEER_CONNECTIONS <= MAX_PEER_CONNECTIONS <=
+        // MAX_PENDING_CONNECTIONS
+        MAX_PEER_CONNECTIONS =
+            std::min(MAX_PEER_CONNECTIONS, MAX_PENDING_CONNECTIONS);
+        TARGET_PEER_CONNECTIONS =
+            std::min(TARGET_PEER_CONNECTIONS, MAX_PEER_CONNECTIONS);
         validateConfig();
     }
     catch (cpptoml::toml_parse_exception& ex)
@@ -567,7 +579,7 @@ Config::validateConfig()
 
     try
     {
-        if (FAILURE_SAFETY >= r.size())
+        if (FAILURE_SAFETY >= static_cast<int32_t>(r.size()))
         {
             LOG(ERROR) << "Not enough nodes / thresholds too strict in your "
                           "Quorum set to ensure your desired level of "

@@ -54,6 +54,8 @@ class TestAccount
 
     void manageData(std::string const& name, DataValue* value);
 
+    void bumpSequence(SequenceNumber to);
+
     OfferEntry loadOffer(uint64_t offerID) const;
     bool hasOffer(uint64_t offerID) const;
 
@@ -113,9 +115,17 @@ class TestAccount
         updateSequenceNumber();
         return ++mSn;
     }
-    SequenceNumber loadSequenceNumber() const;
+    SequenceNumber loadSequenceNumber();
+
+    std::string
+    getAccountId()
+    {
+        return mAccountID;
+    }
 
     int64_t getBalance() const;
+
+    bool exists() const;
 
   private:
     Application& mApp;

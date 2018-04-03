@@ -6,7 +6,7 @@ stellar-core can be controlled via the following commands.
 
 ## Command line options
 * **--?** or **--help**: Print the available command line options and then exit..
-* **--c** Send an [HTTP command](#HTTP-Commands) to an already running local instance of stellar-core and then exit. For example: 
+* **--c** Send an [HTTP command](#http-commands) to an already running local instance of stellar-core and then exit. For example: 
 
 `$ stellar-core -c info`
 
@@ -95,7 +95,7 @@ command line option (see above). Most commands return their results in JSON form
 
 * **ll**  
   `/ll?level=L[&partition=P]`<br>
-  Adjust the log level for partition P (or all if no partition is specified).
+  Adjust the log level for partition P where P is one of Bucket, Database, Fs, Herder, History, Ledger, Overlay, Process, SCP, Tx (or all if no partition is specified).
   Level is one of FATAL, ERROR, WARNING, INFO, DEBUG, VERBOSE, TRACE
 
 * **maintenance**
@@ -106,6 +106,10 @@ command line option (see above). Most commands return their results in JSON form
 * **metrics**
  Returns a snapshot of the metrics registry (for monitoring and
 debugging purpose).
+
+* **clearmetrics**
+ `/clearmetrics?[domain=DOMAIN]`<br>
+  Clear metrics for a specified domain. If no domain specified, clear all metrics (for testing purposes).
 
 * **peers**
   Returns the list of known peers in JSON format.

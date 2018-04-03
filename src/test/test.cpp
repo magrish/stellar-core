@@ -6,8 +6,8 @@
 
 #include "util/asio.h"
 
-#include "StellarCoreVersion.h"
 #include "main/Config.h"
+#include "main/StellarCoreVersion.h"
 #include "test.h"
 #include "test/TestUtils.h"
 #include "util/Logging.h"
@@ -73,6 +73,7 @@ getTestConfig(int instanceNumber, Config::TestDbMode mode)
 
         cfgs[instanceNumber] = stellar::make_unique<Config>();
         Config& thisConfig = *cfgs[instanceNumber];
+        thisConfig.USE_CONFIG_FOR_GENESIS = true;
 
         std::ostringstream sstream;
 
