@@ -11,6 +11,7 @@
 #include "database/Database.h"
 #include "herder/Herder.h"
 #include "herder/TxSetFrame.h"
+#include "ledger/LedgerManager.h"
 #include "main/Application.h"
 #include "main/Config.h"
 #include "overlay/LoadManager.h"
@@ -19,7 +20,7 @@
 #include "overlay/PeerRecord.h"
 #include "overlay/StellarXDR.h"
 #include "util/Logging.h"
-#include "util/SociNoWarnings.h"
+#include "util/XDROperators.h"
 
 #include "medida/meter.h"
 #include "medida/metrics_registry.h"
@@ -27,6 +28,7 @@
 
 #include "xdrpp/marshal.h"
 
+#include <soci.h>
 #include <time.h>
 
 // LATER: need to add some way of docking peers that are misbehaving by sending
@@ -37,8 +39,6 @@ namespace stellar
 
 using namespace std;
 using namespace soci;
-
-using xdr::operator<;
 
 medida::Meter&
 Peer::getByteReadMeter(Application& app)
@@ -57,7 +57,6 @@ Peer::Peer(Application& app, PeerRole role)
     , mRole(role)
     , mState(role == WE_CALLED_REMOTE ? CONNECTING : CONNECTED)
     , mRemoteOverlayVersion(0)
-    , mRemoteListeningPort(0)
     , mIdleTimer(app)
     , mLastRead(app.getClock().now())
     , mLastWrite(app.getClock().now())
@@ -132,40 +131,6 @@ Peer::Peer(Application& app, PeerRole role)
           {"overlay", "send", "scp-message"}, "message"))
     , mSendGetSCPStateMeter(app.getMetrics().NewMeter(
           {"overlay", "send", "get-scp-state"}, "message"))
-    , mDropInConnectHandlerMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "connect-handler"}, "drop"))
-    , mDropInRecvMessageDecodeMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-message-decode"}, "drop"))
-    , mDropInRecvMessageSeqMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-message-seq"}, "drop"))
-    , mDropInRecvMessageMacMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-message-mac"}, "drop"))
-    , mDropInRecvMessageUnauthMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-message-unauth"}, "drop"))
-    , mDropInRecvHelloUnexpectedMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-hello-unexpected"}, "drop"))
-    , mDropInRecvHelloVersionMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-hello-version"}, "drop"))
-    , mDropInRecvHelloSelfMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-hello-self"}, "drop"))
-    , mDropInRecvHelloPeerIDMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-hello-peerid"}, "drop"))
-    , mDropInRecvHelloCertMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-hello-cert"}, "drop"))
-    , mDropInRecvHelloBanMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-hello-ban"}, "drop"))
-    , mDropInRecvHelloNetMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-hello-net"}, "drop"))
-    , mDropInRecvHelloPortMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-hello-port"}, "drop"))
-    , mDropInRecvAuthUnexpectedMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-auth-unexpected"}, "drop"))
-    , mDropInRecvAuthRejectMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-auth-reject"}, "drop"))
-    , mDropInRecvAuthInvalidPeerMeter(app.getMetrics().NewMeter(
-          {"overlay", "drop", "recv-auth-invalid-peer"}, "drop"))
-    , mDropInRecvErrorMeter(
-          app.getMetrics().NewMeter({"overlay", "drop", "recv-error"}, "drop"))
 {
     auto bytes = randomBytes(mSendNonce.size());
     std::copy(bytes.begin(), bytes.end(), mSendNonce.begin());
@@ -274,9 +239,7 @@ Peer::sendAuth()
 std::string
 Peer::toString()
 {
-    std::stringstream s;
-    s << getIP() << ":" << mRemoteListeningPort;
-    return s.str();
+    return mAddress.toString();
 }
 
 void
@@ -301,7 +264,6 @@ Peer::connectHandler(asio::error_code const& error)
     {
         CLOG(WARNING, "Overlay")
             << " connectHandler error: " << error.message();
-        mDropInConnectHandlerMeter.Mark();
         drop();
     }
     else
@@ -381,28 +343,28 @@ Peer::sendGetScpState(uint32 ledgerSeq)
 void
 Peer::sendPeers()
 {
-    // send top 50 peers we know about
-    vector<PeerRecord> peerList;
-    PeerRecord::loadPeerRecords(
-        mApp.getDatabase(), 50, mApp.getClock().now(),
-        [&](PeerRecord const& pr) {
-            if (!pr.isPrivateAddress() &&
-                !pr.isSelfAddressAndPort(getIP(), mRemoteListeningPort))
-            {
-                peerList.emplace_back(pr);
-            }
-            return peerList.size() < 50;
-        });
     StellarMessage newMsg;
     newMsg.type(PEERS);
+    uint32 maxPeerCount = std::min<uint32>(50, newMsg.peers().max_size());
+
+    // send top peers we know about
+    vector<PeerRecord> peerList;
+    PeerRecord::loadPeerRecords(mApp.getDatabase(), 50, mApp.getClock().now(),
+                                [&](PeerRecord const& pr) {
+                                    bool r = peerList.size() < maxPeerCount;
+                                    if (r)
+                                    {
+                                        if (!pr.getAddress().isPrivate() &&
+                                            pr.getAddress() != mAddress)
+                                        {
+                                            peerList.emplace_back(pr);
+                                        }
+                                    }
+                                    return r;
+                                });
     newMsg.peers().reserve(peerList.size());
     for (auto const& pr : peerList)
     {
-        if (pr.isPrivateAddress() ||
-            pr.isSelfAddressAndPort(getIP(), mRemoteListeningPort))
-        {
-            continue;
-        }
         PeerAddress pa;
         pr.toXdr(pa);
         newMsg.peers().push_back(pa);
@@ -545,7 +507,6 @@ Peer::recvMessage(xdr::msg_ptr const& msg)
     catch (xdr::xdr_runtime_error& e)
     {
         CLOG(ERROR, "Overlay") << "received corrupt xdr::msg_ptr " << e.what();
-        mDropInRecvMessageDecodeMeter.Mark();
         drop();
         return;
     }
@@ -582,7 +543,6 @@ Peer::recvMessage(AuthenticatedMessage const& msg)
         if (msg.v0().sequence != mRecvMacSeq)
         {
             CLOG(ERROR, "Overlay") << "Unexpected message-auth sequence";
-            mDropInRecvMessageSeqMeter.Mark();
             ++mRecvMacSeq;
             drop(ERR_AUTH, "unexpected auth sequence");
             return;
@@ -593,7 +553,6 @@ Peer::recvMessage(AuthenticatedMessage const& msg)
                 xdr::xdr_to_opaque(msg.v0().sequence, msg.v0().message)))
         {
             CLOG(ERROR, "Overlay") << "Message-auth check failed";
-            mDropInRecvMessageMacMeter.Mark();
             ++mRecvMacSeq;
             drop(ERR_AUTH, "unexpected MAC");
             return;
@@ -624,7 +583,6 @@ Peer::recvMessage(StellarMessage const& stellarMsg)
     {
         CLOG(WARNING, "Overlay")
             << "recv: " << stellarMsg.type() << " before completed handshake";
-        mDropInRecvMessageUnauthMeter.Mark();
         drop();
         return;
     }
@@ -867,24 +825,20 @@ Peer::recvError(StellarMessage const& msg)
     }
     CLOG(WARNING, "Overlay")
         << "Received error (" << codeStr << "): " << msg.error().msg;
-    mDropInRecvErrorMeter.Mark();
     drop();
 }
 
 void
 Peer::noteHandshakeSuccessInPeerRecord()
 {
-    if (getIP().empty() || getRemoteListeningPort() == 0)
+    if (getAddress().isEmpty())
     {
-        CLOG(ERROR, "Overlay") << "unable to handshake with " << getIP() << ":"
-                               << getRemoteListeningPort();
-        mDropInRecvAuthInvalidPeerMeter.Mark();
+        CLOG(ERROR, "Overlay") << "unable to handshake with " << toString();
         drop();
         return;
     }
 
-    auto pr = PeerRecord::loadPeerRecord(mApp.getDatabase(), getIP(),
-                                         getRemoteListeningPort());
+    auto pr = PeerRecord::loadPeerRecord(mApp.getDatabase(), getAddress());
     if (pr)
     {
         pr->setPreferred(mApp.getOverlayManager().isPreferred(this));
@@ -892,8 +846,7 @@ Peer::noteHandshakeSuccessInPeerRecord()
     }
     else
     {
-        pr = make_optional<PeerRecord>(getIP(), mRemoteListeningPort,
-                                       mApp.getClock().now());
+        pr = make_optional<PeerRecord>(getAddress(), mApp.getClock().now());
     }
     CLOG(INFO, "Overlay") << "successful handshake with "
                           << mApp.getConfig().toShortString(mPeerID) << "@"
@@ -904,12 +857,9 @@ Peer::noteHandshakeSuccessInPeerRecord()
 void
 Peer::recvHello(Hello const& elo)
 {
-    using xdr::operator==;
-
     if (mState >= GOT_HELLO)
     {
         CLOG(ERROR, "Overlay") << "received unexpected HELLO";
-        mDropInRecvHelloUnexpectedMeter.Mark();
         drop();
         return;
     }
@@ -918,7 +868,6 @@ Peer::recvHello(Hello const& elo)
     if (!peerAuth.verifyRemoteAuthCert(elo.peerID, elo.cert))
     {
         CLOG(ERROR, "Overlay") << "failed to verify remote peer auth cert";
-        mDropInRecvHelloCertMeter.Mark();
         drop();
         return;
     }
@@ -926,12 +875,10 @@ Peer::recvHello(Hello const& elo)
     if (mApp.getBanManager().isBanned(elo.peerID))
     {
         CLOG(ERROR, "Overlay") << "Node is banned";
-        mDropInRecvHelloBanMeter.Mark();
         drop();
         return;
     }
 
-    mRemoteListeningPort = static_cast<unsigned short>(elo.listeningPort);
     mRemoteOverlayMinVersion = elo.overlayMinVersion;
     mRemoteOverlayVersion = elo.overlayVersion;
     mRemoteVersion = elo.versionStr;
@@ -967,7 +914,6 @@ Peer::recvHello(Hello const& elo)
             << mRemoteOverlayVersion << "] expected: ["
             << mApp.getConfig().OVERLAY_PROTOCOL_VERSION << ","
             << mApp.getConfig().OVERLAY_PROTOCOL_VERSION << "]";
-        mDropInRecvHelloVersionMeter.Mark();
         drop(ERR_CONF, "wrong protocol version");
         return;
     }
@@ -975,7 +921,6 @@ Peer::recvHello(Hello const& elo)
     if (elo.peerID == mApp.getConfig().NODE_SEED.getPublicKey())
     {
         CLOG(WARNING, "Overlay") << "connecting to self";
-        mDropInRecvHelloSelfMeter.Mark();
         drop(ERR_CONF, "connecting to self");
         return;
     }
@@ -987,7 +932,6 @@ Peer::recvHello(Hello const& elo)
         CLOG(DEBUG, "Overlay")
             << "NetworkID = " << hexAbbrev(elo.networkID)
             << " expected: " << hexAbbrev(mApp.getNetworkID());
-        mDropInRecvHelloNetMeter.Mark();
         drop(ERR_CONF, "wrong network passphrase");
         return;
     }
@@ -1003,7 +947,6 @@ Peer::recvHello(Hello const& elo)
             CLOG(WARNING, "Overlay")
                 << "connection from already-connected peerID "
                 << mApp.getConfig().toShortString(mPeerID);
-            mDropInRecvHelloPeerIDMeter.Mark();
             drop(ERR_CONF, "connecting already-connected peer");
             return;
         }
@@ -1020,17 +963,16 @@ Peer::recvHello(Hello const& elo)
             CLOG(WARNING, "Overlay")
                 << "connection from already-connected peerID "
                 << mApp.getConfig().toShortString(mPeerID);
-            mDropInRecvHelloPeerIDMeter.Mark();
             drop(ERR_CONF, "connecting already-connected peer");
             return;
         }
     }
 
-    if (elo.listeningPort <= 0 || elo.listeningPort > UINT16_MAX)
+    mAddress = makeAddress(elo.listeningPort);
+    if (mAddress.isEmpty())
     {
-        CLOG(WARNING, "Overlay") << "bad port in recvHello";
-        mDropInRecvHelloPortMeter.Mark();
-        drop(ERR_CONF, "bad port number");
+        CLOG(WARNING, "Overlay") << "bad address in recvHello";
+        drop(ERR_CONF, "bad address");
         return;
     }
 
@@ -1046,7 +988,6 @@ Peer::recvAuth(StellarMessage const& msg)
     if (mState != GOT_HELLO)
     {
         CLOG(INFO, "Overlay") << "Unexpected AUTH message before HELLO";
-        mDropInRecvAuthUnexpectedMeter.Mark();
         drop(ERR_MISC, "out-of-order AUTH message");
         return;
     }
@@ -1054,7 +995,6 @@ Peer::recvAuth(StellarMessage const& msg)
     if (isAuthenticated())
     {
         CLOG(INFO, "Overlay") << "Unexpected AUTH message";
-        mDropInRecvAuthUnexpectedMeter.Mark();
         drop(ERR_MISC, "out-of-order AUTH message");
         return;
     }
@@ -1072,7 +1012,6 @@ Peer::recvAuth(StellarMessage const& msg)
     if (!mApp.getOverlayManager().acceptAuthenticatedPeer(self))
     {
         CLOG(WARNING, "Overlay") << "New peer rejected, all slots taken";
-        mDropInRecvAuthRejectMeter.Mark();
         drop(ERR_LOAD, "peer rejected");
         return;
     }
@@ -1117,31 +1056,30 @@ Peer::recvPeers(StellarMessage const& msg)
             mApp.getClock().now() +
             std::chrono::seconds(std::rand() % NEW_PEER_WINDOW_SECONDS);
 
-        stringstream ip;
-        ip << (int)peer.ip.ipv4()[0] << "." << (int)peer.ip.ipv4()[1] << "."
-           << (int)peer.ip.ipv4()[2] << "." << (int)peer.ip.ipv4()[3];
-        // don't use peer.numFailures here as we may have better luck
-        // (and we don't want to poison our failure count)
-        PeerRecord pr{ip.str(), static_cast<unsigned short>(peer.port),
-                      defaultNextAttempt, 0};
+        assert(peer.ip.type() == IPv4);
+        auto address = PeerBareAddress{peer};
 
-        if (pr.isPrivateAddress())
+        if (address.isPrivate())
         {
             CLOG(WARNING, "Overlay")
-                << "ignoring received private address " << pr.toString();
+                << "ignoring received private address " << address.toString();
         }
-        else if (pr.isSelfAddressAndPort(getIP(), mApp.getConfig().PEER_PORT))
+        else if (address == PeerBareAddress{getAddress().getIP(),
+                                            mApp.getConfig().PEER_PORT})
         {
             CLOG(WARNING, "Overlay")
-                << "ignoring received self-address " << pr.toString();
+                << "ignoring received self-address " << address.toString();
         }
-        else if (pr.isLocalhost() &&
+        else if (address.isLocalhost() &&
                  !mApp.getConfig().ALLOW_LOCALHOST_FOR_TESTING)
         {
             CLOG(WARNING, "Overlay") << "ignoring received localhost";
         }
         else
         {
+            // don't use peer.numFailures here as we may have better luck
+            // (and we don't want to poison our failure count)
+            PeerRecord pr{address, defaultNextAttempt, 0};
             pr.insertIfNew(mApp.getDatabase());
         }
     }

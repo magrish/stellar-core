@@ -4,13 +4,19 @@
 // under the Apache License, Version 2.0. See the COPYING file at the root
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
-#include "ledger/OfferFrame.h"
 #include "transactions/OperationFrame.h"
 #include <functional>
 #include <vector>
 
 namespace stellar
 {
+
+class AbstractLedgerTxn;
+class ConstLedgerTxnEntry;
+class LedgerTxnEntry;
+class LedgerTxnHeader;
+class TrustLineWrapper;
+class ConstTrustLineWrapper;
 
 enum class ExchangeResultType
 {
@@ -36,57 +42,78 @@ struct ExchangeResult
     }
 };
 
+struct ExchangeResultV10
+{
+    int64_t numWheatReceived;
+    int64_t numSheepSend;
+    bool wheatStays;
+};
+
+int64_t canSellAtMostBasedOnSheep(LedgerTxnHeader const& header,
+                                  Asset const& sheep,
+                                  ConstTrustLineWrapper const& sheepLine,
+                                  Price const& wheatPrice);
+
+int64_t canSellAtMost(LedgerTxnHeader const& header,
+                      LedgerTxnEntry const& account, Asset const& asset,
+                      TrustLineWrapper const& trustLine);
+int64_t canSellAtMost(LedgerTxnHeader const& header,
+                      ConstLedgerTxnEntry const& account, Asset const& asset,
+                      ConstTrustLineWrapper const& trustLine);
+
+int64_t canBuyAtMost(LedgerTxnHeader const& header,
+                     LedgerTxnEntry const& account, Asset const& asset,
+                     TrustLineWrapper const& trustLine);
+int64_t canBuyAtMost(LedgerTxnHeader const& header,
+                     ConstLedgerTxnEntry const& account, Asset const& asset,
+                     ConstTrustLineWrapper const& trustLine);
+
 ExchangeResult exchangeV2(int64_t wheatReceived, Price price,
                           int64_t maxWheatReceive, int64_t maxSheepSend);
 ExchangeResult exchangeV3(int64_t wheatReceived, Price price,
                           int64_t maxWheatReceive, int64_t maxSheepSend);
+ExchangeResultV10 exchangeV10(Price price, int64_t maxWheatSend,
+                              int64_t maxWheatReceive, int64_t maxSheepSend,
+                              int64_t maxSheepReceive, bool isPathPayment);
 
-class OfferExchange
+ExchangeResultV10 exchangeV10WithoutPriceErrorThresholds(
+    Price price, int64_t maxWheatSend, int64_t maxWheatReceive,
+    int64_t maxSheepSend, int64_t maxSheepReceive, bool isPathPayment);
+ExchangeResultV10 applyPriceErrorThresholds(Price price, int64_t wheatReceive,
+                                            int64_t sheepSend, bool wheatStays,
+                                            bool isPathPayment);
+
+int64_t adjustOffer(Price const& price, int64_t maxWheatSend,
+                    int64_t maxSheepReceive);
+
+bool checkPriceErrorBound(Price price, int64_t wheatReceive, int64_t sheepSend,
+                          bool canFavorWheat);
+
+enum class OfferFilterResult
 {
-
-    LedgerDelta& mDelta;
-    LedgerManager& mLedgerManager;
-
-    std::vector<ClaimOfferAtom> mOfferTrail;
-
-  public:
-    OfferExchange(LedgerDelta& delta, LedgerManager& ledgerManager);
-
-    // buys wheat with sheep from a single offer
-    enum CrossOfferResult
-    {
-        eOfferPartial,
-        eOfferTaken,
-        eOfferCantConvert
-    };
-    CrossOfferResult crossOffer(OfferFrame& sellingWheatOffer,
-                                int64_t maxWheatReceived,
-                                int64_t& numWheatReceived, int64_t maxSheepSend,
-                                int64_t& numSheepSent);
-
-    enum OfferFilterResult
-    {
-        eKeep,
-        eStop,
-        eSkip
-    };
-
-    enum ConvertResult
-    {
-        eOK,
-        ePartial,
-        eFilterStop
-    };
-    // buys wheat with sheep, crossing as many offers as necessary
-    ConvertResult convertWithOffers(
-        Asset const& sheep, int64_t maxSheepSent, int64_t& sheepSend,
-        Asset const& wheat, int64_t maxWheatReceive, int64_t& weatReceived,
-        std::function<OfferFilterResult(OfferFrame const&)> filter);
-
-    std::vector<ClaimOfferAtom> const&
-    getOfferTrail() const
-    {
-        return mOfferTrail;
-    }
+    eKeep,
+    eStop
 };
+
+enum class ConvertResult
+{
+    eOK,
+    ePartial,
+    eFilterStop
+};
+
+enum class CrossOfferResult
+{
+    eOfferPartial,
+    eOfferTaken,
+    eOfferCantConvert
+};
+
+// buys wheat with sheep, crossing as many offers as necessary
+ConvertResult convertWithOffers(
+    AbstractLedgerTxn& ltx, Asset const& sheep, int64_t maxSheepSent,
+    int64_t& sheepSend, Asset const& wheat, int64_t maxWheatReceive,
+    int64_t& wheatReceived, bool isPathPayment,
+    std::function<OfferFilterResult(LedgerTxnEntry const&)> filter,
+    std::vector<ClaimOfferAtom>& offerTrail);
 }

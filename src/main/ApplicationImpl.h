@@ -8,6 +8,7 @@
 #include "main/Config.h"
 #include "main/PersistentState.h"
 #include "medida/timer_context.h"
+#include "util/MetricResetter.h"
 #include "util/Timer.h"
 #include <thread>
 
@@ -29,7 +30,7 @@ class ProcessManager;
 class CommandHandler;
 class Database;
 class LoadGenerator;
-class NtpSynchronizationChecker;
+class LedgerTxnRoot;
 
 class ApplicationImpl : public Application
 {
@@ -50,10 +51,12 @@ class ApplicationImpl : public Application
     virtual medida::MetricsRegistry& getMetrics() override;
     virtual void syncOwnMetrics() override;
     virtual void syncAllMetrics() override;
+    virtual void clearMetrics(std::string const& domain) override;
     virtual TmpDirManager& getTmpDirManager() override;
     virtual LedgerManager& getLedgerManager() override;
     virtual BucketManager& getBucketManager() override;
     virtual CatchupManager& getCatchupManager() override;
+    virtual HistoryArchiveManager& getHistoryArchiveManager() override;
     virtual HistoryManager& getHistoryManager() override;
     virtual Maintainer& getMaintainer() override;
     virtual ProcessManager& getProcessManager() override;
@@ -69,8 +72,15 @@ class ApplicationImpl : public Application
     virtual StatusManager& getStatusManager() override;
 
     virtual asio::io_service& getWorkerIOService() override;
+    virtual void postOnMainThread(std::function<void()>&& f,
+                                  std::string jobName) override;
+    virtual void postOnMainThreadWithDelay(std::function<void()>&& f,
+                                           std::string jobName) override;
+    virtual void postOnBackgroundThread(std::function<void()>&& f,
+                                        std::string jobName) override;
 
     void newDB() override;
+
     virtual void start() override;
 
     // Stops the worker io_service, which should cause the threads to exit once
@@ -86,12 +96,11 @@ class ApplicationImpl : public Application
 
     virtual bool manualClose() override;
 
-    virtual void generateLoad(uint32_t nAccounts, uint32_t nTxs,
-                              uint32_t txRate, bool autoRate) override;
+    virtual void generateLoad(bool isCreate, uint32_t nAccounts,
+                              uint32_t offset, uint32_t nTxs, uint32_t txRate,
+                              uint32_t batchSize, bool autoRate) override;
 
     virtual LoadGenerator& getLoadGenerator() override;
-
-    virtual void checkDB() override;
 
     virtual void applyCfgCommands() override;
 
@@ -102,6 +111,8 @@ class ApplicationImpl : public Application
     virtual void reportInfo() override;
 
     virtual Hash const& getNetworkID() const override;
+
+    virtual LedgerTxnRoot& getLedgerTxnRoot() override;
 
   protected:
     std::unique_ptr<LedgerManager>
@@ -127,11 +138,11 @@ class ApplicationImpl : public Application
     std::unique_ptr<asio::io_service::work> mWork;
 
     std::unique_ptr<Database> mDatabase;
-    std::unique_ptr<TmpDirManager> mTmpDirManager;
     std::unique_ptr<OverlayManager> mOverlayManager;
     std::unique_ptr<BucketManager> mBucketManager;
     std::unique_ptr<CatchupManager> mCatchupManager;
     std::unique_ptr<HerderPersistence> mHerderPersistence;
+    std::unique_ptr<HistoryArchiveManager> mHistoryArchiveManager;
     std::unique_ptr<HistoryManager> mHistoryManager;
     std::unique_ptr<InvariantManager> mInvariantManager;
     std::unique_ptr<Maintainer> mMaintainer;
@@ -141,21 +152,23 @@ class ApplicationImpl : public Application
     std::unique_ptr<PersistentState> mPersistentState;
     std::unique_ptr<LoadGenerator> mLoadGenerator;
     std::unique_ptr<BanManager> mBanManager;
-    std::shared_ptr<NtpSynchronizationChecker> mNtpSynchronizationChecker;
     std::unique_ptr<StatusManager> mStatusManager;
+    std::unique_ptr<LedgerTxnRoot> mLedgerTxnRoot;
 
     std::vector<std::thread> mWorkerThreads;
 
     asio::signal_set mStopSignals;
 
+    bool mStarted;
     bool mStopping;
 
     VirtualTimer mStoppingTimer;
 
     std::unique_ptr<medida::MetricsRegistry> mMetrics;
     medida::Counter& mAppStateCurrent;
-    medida::Timer& mAppStateChanges;
-    VirtualClock::time_point mLastStateChange;
+    medida::Timer& mPostOnMainThreadDelay;
+    medida::Timer& mPostOnMainThreadWithDelayDelay;
+    medida::Timer& mPostOnBackgroundThreadDelay;
     VirtualClock::time_point mStartedOn;
 
     Hash mNetworkID;

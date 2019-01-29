@@ -23,6 +23,7 @@
 # text editors
 *~
 *.swp
+**/.vscode/*
 
 .libs
 .deps
@@ -30,7 +31,7 @@
 
 /INSTALL
 
-/src/StellarCoreVersion.h
+/src/main/StellarCoreVersion.cpp
 /src/testdata
 /src/xdr/*.h
 /Makefile

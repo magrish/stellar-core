@@ -45,7 +45,6 @@ class OverlayManagerImpl : public OverlayManager
     LoadManager mLoad;
     bool mShuttingDown;
 
-    medida::Meter& mMessagesReceived;
     medida::Meter& mMessagesBroadcast;
     medida::Meter& mConnectionsAttempted;
     medida::Meter& mConnectionsEstablished;
@@ -74,7 +73,8 @@ class OverlayManagerImpl : public OverlayManager
     void broadcastMessage(StellarMessage const& msg,
                           bool force = false) override;
     void connectTo(std::string const& addr) override;
-    virtual void connectTo(PeerRecord& pr) override;
+    void connectTo(PeerRecord& pr) override;
+    void connectTo(PeerBareAddress const& address) override;
 
     void addPendingPeer(Peer::pointer peer) override;
     void dropPeer(Peer* peer) override;
@@ -86,9 +86,8 @@ class OverlayManagerImpl : public OverlayManager
     getAuthenticatedPeers() const override;
     int getAuthenticatedPeersCount() const override;
 
-    // returns NULL if the passed peer isn't found
-    Peer::pointer getConnectedPeer(std::string const& ip,
-                                   unsigned short port) override;
+    // returns nullptr if the passed peer isn't found
+    Peer::pointer getConnectedPeer(PeerBareAddress const& address) override;
 
     void connectToMorePeers(vector<PeerRecord>& peers);
     std::vector<Peer::pointer> getRandomAuthenticatedPeers() override;

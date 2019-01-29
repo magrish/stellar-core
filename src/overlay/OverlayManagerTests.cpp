@@ -15,9 +15,9 @@
 #include "test/TxTests.h"
 #include "test/test.h"
 #include "transactions/TransactionFrame.h"
-#include "util/SociNoWarnings.h"
 #include "util/Timer.h"
-#include "util/make_unique.h"
+
+#include <soci.h>
 
 using namespace stellar;
 using namespace std;
@@ -32,20 +32,22 @@ class PeerStub : public Peer
   public:
     int sent = 0;
 
-    PeerStub(Application& app, short port) : Peer(app, WE_CALLED_REMOTE)
+    PeerStub(Application& app, PeerBareAddress const& addres)
+        : Peer(app, WE_CALLED_REMOTE)
     {
         mPeerID = SecretKey::random().getPublicKey();
         mState = GOT_AUTH;
-        mRemoteListeningPort = port;
+        mAddress = addres;
+    }
+    virtual PeerBareAddress
+    makeAddress(int) const override
+    {
+        REQUIRE(false); // should not be called
+        return {};
     }
     virtual void
     drop(bool) override
     {
-    }
-    virtual string
-    getIP() override
-    {
-        return "127.0.0.1";
     }
     virtual void
     sendMessage(xdr::msg_ptr&& xdrBytes) override
@@ -64,12 +66,12 @@ class OverlayManagerStub : public OverlayManagerImpl
     virtual void
     connectTo(PeerRecord& pr) override
     {
-        if (!getConnectedPeer(pr.ip(), pr.port()))
+        if (!getConnectedPeer(pr.getAddress()))
         {
             pr.backOff(mApp.getClock());
             pr.storePeerRecord(mApp.getDatabase());
 
-            auto peerStub = std::make_shared<PeerStub>(mApp, pr.port());
+            auto peerStub = std::make_shared<PeerStub>(mApp, pr.getAddress());
             addPendingPeer(peerStub);
             REQUIRE(acceptAuthenticatedPeer(peerStub));
         }
@@ -97,7 +99,7 @@ class OverlayManagerTests
         virtual std::unique_ptr<OverlayManager>
         createOverlayManager() override
         {
-            return make_unique<OverlayManagerStub>(*this);
+            return std::make_unique<OverlayManagerStub>(*this);
         }
     };
 

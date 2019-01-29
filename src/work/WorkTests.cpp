@@ -21,6 +21,7 @@ using namespace stellar;
 class CallCmdWork : public Work
 {
     std::string mCommand;
+    bool mDidRun{false};
 
   public:
     CallCmdWork(Application& app, WorkParent& parent, std::string command)
@@ -32,6 +33,13 @@ class CallCmdWork : public Work
     {
         auto evt = mApp.getProcessManager().runProcess(mCommand);
         evt.async_wait(callComplete());
+        mDidRun = true;
+    }
+
+    bool
+    didRun() const
+    {
+        return mDidRun;
     }
 };
 
@@ -50,6 +58,24 @@ TEST_CASE("work manager", "[work]")
     {
         clock.crank();
     }
+}
+
+TEST_CASE("work propagates process failure", "[work]")
+{
+    VirtualClock clock;
+    Config const& cfg = getTestConfig();
+    Application::pointer appPtr = createTestApplication(clock, cfg);
+    auto& wm = appPtr->getWorkManager();
+
+    auto w = wm.addWork<CallCmdWork>("hostname");
+    w->addWork<CallCmdWork>("xsomeinvalid");
+    wm.advanceChildren();
+    while (!wm.allChildrenDone())
+    {
+        clock.crank();
+    }
+    REQUIRE_FALSE(w->didRun());
+    REQUIRE(w->getState() == Work::WORK_FAILURE_RAISE);
 }
 
 class CountDownWork : public Work
@@ -221,7 +247,7 @@ class WorkWith2Subworks : public Work
     bool mCalledSuccessWithPendingSubwork{false};
 };
 
-TEST_CASE("sub-subwork items succed at the same time", "[work]")
+TEST_CASE("sub subwork items succed at the same time", "[work]")
 {
     VirtualClock clock;
     auto const& cfg = getTestConfig();
@@ -232,24 +258,22 @@ TEST_CASE("sub-subwork items succed at the same time", "[work]")
     auto work2 = w->addWork<WorkDoNothing>("work-2");
     auto work3 = w->addWork<WorkDoNothing>("work-3");
 
-    auto i = 0;
-
     wm.advanceChildren();
+    clock.crank(false);
+
+    work2->forceSuccess();
+    work1->mFirstSubwork->forceSuccess();
+    work3->forceSuccess();
+
     while (!wm.allChildrenDone())
     {
-        clock.crank(false);
-
-        switch (i++)
+        if (work1->mSecondSubwork)
         {
-        case 1:
-            work2->forceSuccess();
-            work1->mFirstSubwork->forceSuccess();
-            work3->forceSuccess();
-            break;
-        case 2:
             work1->mSecondSubwork->forceSuccess();
             break;
         }
+
+        clock.crank(false);
     }
 
     REQUIRE(!work1->mCalledSuccessWithPendingSubwork);

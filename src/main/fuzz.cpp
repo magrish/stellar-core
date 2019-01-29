@@ -3,11 +3,11 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "util/asio.h"
-#include "StellarCoreVersion.h"
 #include "crypto/Hex.h"
 #include "crypto/SHA.h"
 #include "main/Application.h"
 #include "main/Config.h"
+#include "main/StellarCoreVersion.h"
 #include "overlay/LoopbackPeer.h"
 #include "overlay/OverlayManager.h"
 #include "overlay/TCPPeer.h"
@@ -150,7 +150,7 @@ restart:
         LOG(INFO) << "Fuzzer injecting message " << i << ": "
                   << msgSummary(msg);
         auto peer = loop.getInitiator();
-        clock.getIOService().post(
+        clock.postToCurrentCrank(
             [peer, msg]() { peer->Peer::sendMessage(msg); });
     }
     while (loop.getAcceptor()->isConnected())

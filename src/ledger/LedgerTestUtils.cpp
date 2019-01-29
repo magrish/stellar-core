@@ -3,12 +3,16 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "LedgerTestUtils.h"
+#include "crypto/SHA.h"
 #include "crypto/SecretKey.h"
-#include "ledger/AccountFrame.h"
+#include "main/Config.h"
+#include "util/Logging.h"
+#include "util/Math.h"
 #include "util/types.h"
-#include <cctype>
+#include <locale>
 #include <string>
 #include <xdrpp/autocheck.h>
+#include <xdrpp/xdrpp/marshal.h>
 
 namespace stellar
 {
@@ -41,15 +45,15 @@ template <typename T>
 void
 replaceControlCharacters(T& s, int minSize)
 {
-    std::locale loc("C");
-    if (s.size() < minSize)
+    auto& loc = std::locale::classic();
+    if (static_cast<int>(s.size()) < minSize)
     {
         s.resize(minSize);
     }
     for (auto it = s.begin(); it != s.end(); it++)
     {
         char c = static_cast<char>(*it);
-        if (c < 0 || std::iscntrl(c))
+        if (c < 0 || std::iscntrl(c, loc))
         {
             auto b = autocheck::generator<char>{}(autocheck::detail::nalnums);
             *it = b;
@@ -78,7 +82,9 @@ makeValid(AccountEntry& a)
         *a.inflationDest = PubKeyUtils::random();
     }
 
-    std::sort(a.signers.begin(), a.signers.end(), &AccountFrame::signerCompare);
+    std::sort(
+        a.signers.begin(), a.signers.end(),
+        [](Signer const& lhs, Signer const& rhs) { return lhs.key < rhs.key; });
     a.signers.erase(
         std::unique(a.signers.begin(), a.signers.end(), signerEqual),
         a.signers.end());
@@ -91,8 +97,18 @@ makeValid(AccountEntry& a)
         }
     }
     a.numSubEntries = (uint32)a.signers.size();
-    a.seqNum = a.seqNum & INT64_MAX;
+    if (a.seqNum < 0)
+    {
+        a.seqNum = -a.seqNum;
+    }
     a.flags = a.flags & MASK_ACCOUNT_FLAGS;
+
+    if (a.ext.v() == 1)
+    {
+        a.ext.v1().liabilities.buying = std::abs(a.ext.v1().liabilities.buying);
+        a.ext.v1().liabilities.selling =
+            std::abs(a.ext.v1().liabilities.selling);
+    }
 }
 
 void
@@ -108,6 +124,14 @@ makeValid(TrustLineEntry& tl)
     strToAssetCode(tl.asset.alphaNum4().assetCode, "USD");
     clampHigh<int64_t>(tl.limit, tl.balance);
     tl.flags = tl.flags & MASK_TRUSTLINE_FLAGS;
+
+    if (tl.ext.v() == 1)
+    {
+        tl.ext.v1().liabilities.buying =
+            std::abs(tl.ext.v1().liabilities.buying);
+        tl.ext.v1().liabilities.selling =
+            std::abs(tl.ext.v1().liabilities.selling);
+    }
 }
 void
 makeValid(OfferEntry& o)
@@ -134,6 +158,66 @@ void
 makeValid(DataEntry& d)
 {
     replaceControlCharacters(d.dataName, 1);
+}
+
+void
+makeValid(std::vector<LedgerHeaderHistoryEntry>& lhv,
+          LedgerHeaderHistoryEntry firstLedger,
+          HistoryManager::LedgerVerificationStatus state)
+{
+    auto randomIndex = rand_uniform<size_t>(1, lhv.size() - 1);
+    auto prevHash = firstLedger.header.previousLedgerHash;
+    auto ledgerSeq = firstLedger.header.ledgerSeq;
+
+    for (auto i = 0; i < lhv.size(); i++)
+    {
+        auto& lh = lhv[i];
+
+        lh.header.ledgerVersion = Config::CURRENT_LEDGER_PROTOCOL_VERSION;
+        lh.header.previousLedgerHash = prevHash;
+        lh.header.ledgerSeq = ledgerSeq;
+
+        if (i == randomIndex && state != HistoryManager::VERIFY_STATUS_OK)
+        {
+            switch (state)
+            {
+            case HistoryManager::VERIFY_STATUS_ERR_BAD_LEDGER_VERSION:
+                lh.header.ledgerVersion += 1;
+                break;
+            case HistoryManager::VERIFY_STATUS_ERR_BAD_HASH:
+                lh.header.previousLedgerHash = HashUtils::random();
+                break;
+            case HistoryManager::VERIFY_STATUS_ERR_UNDERSHOT:
+                lh.header.ledgerSeq -= 1;
+                break;
+            case HistoryManager::VERIFY_STATUS_ERR_OVERSHOT:
+                lh.header.ledgerSeq += 1;
+                break;
+            default:
+                break;
+            }
+        }
+        // On a coin flip, corrupt header content rather than previous link
+        autocheck::generator<bool> flip;
+        if (i == randomIndex &&
+            state == HistoryManager::VERIFY_STATUS_ERR_BAD_HASH && flip())
+        {
+            lh.hash = HashUtils::random();
+        }
+        else
+        {
+            lh.hash = sha256(xdr::xdr_to_opaque(lh.header));
+        }
+
+        prevHash = lh.hash;
+        ledgerSeq = lh.header.ledgerSeq + 1;
+    }
+
+    if (state == HistoryManager::VERIFY_STATUS_ERR_MISSING_ENTRIES)
+    {
+        // Delete last element
+        lhv.erase(lhv.begin() + lhv.size() - 1);
+    }
 }
 
 static auto validLedgerEntryGenerator = autocheck::map(
@@ -253,6 +337,18 @@ generateValidDataEntries(size_t n)
 {
     static auto vecgen = autocheck::list_of(validDataEntryGenerator);
     return vecgen(n);
+}
+
+std::vector<LedgerHeaderHistoryEntry>
+generateLedgerHeadersForCheckpoint(
+    LedgerHeaderHistoryEntry firstLedger, uint32_t freq,
+    HistoryManager::LedgerVerificationStatus state)
+{
+    static auto vecgen =
+        autocheck::list_of(autocheck::generator<LedgerHeaderHistoryEntry>());
+    auto res = vecgen(freq);
+    makeValid(res, firstLedger, state);
+    return res;
 }
 }
 }

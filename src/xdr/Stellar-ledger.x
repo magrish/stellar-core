@@ -15,7 +15,7 @@ typedef opaque UpgradeType<128>;
 struct StellarValue
 {
     Hash txSetHash;   // transaction set to apply to previous ledger
-    uint64 closeTime; // network close time
+    TimePoint closeTime; // network close time
 
     // upgrades to apply to the previous ledger (usually empty)
     // this is a vector of encoded 'LedgerUpgrade' so that nodes can drop
@@ -265,9 +265,19 @@ struct OperationMeta
     LedgerEntryChanges changes;
 };
 
+struct TransactionMetaV1
+{
+    LedgerEntryChanges txChanges; // tx level changes if any
+    OperationMeta operations<>; // meta for each operation
+};
+
+// this is the meta produced when applying transactions
+// it does not include pre-apply updates such as fees
 union TransactionMeta switch (int v)
 {
 case 0:
     OperationMeta operations<>;
+case 1:
+    TransactionMetaV1 v1;
 };
 }

@@ -3,15 +3,49 @@
 // of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "util/types.h"
+#include "lib/util/format.h"
 #include "lib/util/uint128_t.h"
+#include "util/XDROperators.h"
+
 #include <algorithm>
 #include <locale>
 
 namespace stellar
 {
-static std::locale cLocale("C");
 
-using xdr::operator==;
+LedgerKey
+LedgerEntryKey(LedgerEntry const& e)
+{
+    auto& d = e.data;
+    LedgerKey k;
+    switch (d.type())
+    {
+
+    case ACCOUNT:
+        k.type(ACCOUNT);
+        k.account().accountID = d.account().accountID;
+        break;
+
+    case TRUSTLINE:
+        k.type(TRUSTLINE);
+        k.trustLine().accountID = d.trustLine().accountID;
+        k.trustLine().asset = d.trustLine().asset;
+        break;
+
+    case OFFER:
+        k.type(OFFER);
+        k.offer().sellerID = d.offer().sellerID;
+        k.offer().offerID = d.offer().offerID;
+        break;
+
+    case DATA:
+        k.type(DATA);
+        k.data().accountID = d.data().accountID;
+        k.data().dataName = d.data().dataName;
+        break;
+    }
+    return k;
+}
 
 bool
 isZero(uint256 const& b)
@@ -47,9 +81,10 @@ lessThanXored(Hash const& l, Hash const& r, Hash const& x)
 bool
 isString32Valid(std::string const& str)
 {
+    auto& loc = std::locale::classic();
     for (auto c : str)
     {
-        if (c < 0 || std::iscntrl(c, cLocale))
+        if (c < 0 || std::iscntrl(c, loc))
         {
             return false;
         }
@@ -63,6 +98,7 @@ isAssetValid(Asset const& cur)
     if (cur.type() == ASSET_TYPE_NATIVE)
         return true;
 
+    auto& loc = std::locale::classic();
     if (cur.type() == ASSET_TYPE_CREDIT_ALPHANUM4)
     {
         auto const& code = cur.alphaNum4().assetCode;
@@ -81,7 +117,7 @@ isAssetValid(Asset const& cur)
             }
             else
             {
-                if (b > 0x7F || !std::isalnum((char)b, cLocale))
+                if (b > 0x7F || !std::isalnum((char)b, loc))
                 {
                     return false;
                 }
@@ -109,7 +145,7 @@ isAssetValid(Asset const& cur)
             }
             else
             {
-                if (b > 0x7F || !std::isalnum((char)b, cLocale))
+                if (b > 0x7F || !std::isalnum((char)b, loc))
                 {
                     return false;
                 }
@@ -154,6 +190,22 @@ compareAsset(Asset const& first, Asset const& second)
     return false;
 }
 
+std::string
+formatSize(size_t size)
+{
+    const std::vector<std::string> suffixes = {"B", "KB", "MB", "GB"};
+    double dsize = static_cast<double>(size);
+
+    auto i = 0;
+    while (dsize >= 1024 && i < suffixes.size() - 1)
+    {
+        dsize /= 1024;
+        i++;
+    }
+
+    return fmt::format("{:.2f}{}", dsize, suffixes[i]);
+}
+
 bool
 addBalance(int64_t& balance, int64_t delta, int64_t maxBalance)
 {
@@ -180,48 +232,6 @@ addBalance(int64_t& balance, int64_t delta, int64_t maxBalance)
 
     balance += delta;
     return true;
-}
-
-// calculates A*B/C when A*B overflows 64bits
-bool
-bigDivide(int64_t& result, int64_t A, int64_t B, int64_t C, Rounding rounding)
-{
-    bool res;
-    assert((A >= 0) && (B >= 0) && (C > 0));
-    uint64_t r2;
-    res = bigDivide(r2, (uint64_t)A, (uint64_t)B, (uint64_t)C, rounding);
-    if (res)
-    {
-        res = r2 <= INT64_MAX;
-        result = r2;
-    }
-    return res;
-}
-
-bool
-bigDivide(uint64_t& result, uint64_t A, uint64_t B, uint64_t C,
-          Rounding rounding)
-{
-    // update when moving to (signed) int128
-    uint128_t a(A);
-    uint128_t b(B);
-    uint128_t c(C);
-    uint128_t x = rounding == ROUND_DOWN ? (a * b) / c : (a * b + c - 1) / c;
-
-    result = (uint64_t)x;
-
-    return (x <= UINT64_MAX);
-}
-
-int64_t
-bigDivide(int64_t A, int64_t B, int64_t C, Rounding rounding)
-{
-    int64_t res;
-    if (!bigDivide(res, A, B, C, rounding))
-    {
-        throw std::overflow_error("overflow while performing bigDivide");
-    }
-    return res;
 }
 
 bool

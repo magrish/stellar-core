@@ -5,8 +5,6 @@
 #include "overlay/LoopbackPeer.h"
 #include "crypto/Random.h"
 #include "main/Application.h"
-#include "medida/meter.h"
-#include "medida/metrics_registry.h"
 #include "medida/timer.h"
 #include "overlay/LoadManager.h"
 #include "overlay/OverlayManager.h"
@@ -25,6 +23,20 @@ using namespace std;
 
 LoopbackPeer::LoopbackPeer(Application& app, PeerRole role) : Peer(app, role)
 {
+}
+
+PeerBareAddress
+LoopbackPeer::makeAddress(int remoteListeningPort) const
+{
+    if (remoteListeningPort <= 0 || remoteListeningPort > UINT16_MAX)
+    {
+        return PeerBareAddress{};
+    }
+    else
+    {
+        return PeerBareAddress{
+            "127.0.0.1", static_cast<unsigned short>(remoteListeningPort)};
+    }
 }
 
 AuthCert
@@ -63,10 +75,14 @@ LoopbackPeer::sendMessage(xdr::msg_ptr&& msg)
     }
 }
 
-std::string
-LoopbackPeer::getIP()
+void
+LoopbackPeer::drop(ErrorCode err, std::string const& msg)
 {
-    return "127.0.0.1";
+    if (mState != CLOSING)
+    {
+        mDropReason = msg;
+    }
+    Peer::drop(err, msg);
 }
 
 void
@@ -83,8 +99,8 @@ LoopbackPeer::drop(bool)
     auto remote = mRemote.lock();
     if (remote)
     {
-        remote->getApp().getClock().getIOService().post(
-            [remote]() { remote->drop(); });
+        remote->getApp().postOnMainThread([remote]() { remote->drop(); },
+                                          "LoopbackPeer: drop");
     }
 }
 
@@ -132,8 +148,8 @@ LoopbackPeer::processInQueue()
         if (!mInQueue.empty())
         {
             auto self = static_pointer_cast<LoopbackPeer>(shared_from_this());
-            mApp.getClock().getIOService().post(
-                [self]() { self->processInQueue(); });
+            mApp.postOnMainThread([self]() { self->processInQueue(); },
+                                  "LoopbackPeer: processInQueue");
         }
     }
 }
@@ -198,8 +214,9 @@ LoopbackPeer::deliverOne()
         {
             // move msg to remote's in queue
             remote->mInQueue.emplace(std::move(msg));
-            remote->getApp().getClock().getIOService().post(
-                [remote]() { remote->processInQueue(); });
+            remote->getApp().postOnMainThread(
+                [remote]() { remote->processInQueue(); },
+                "LoopbackPeer: processInQueue in deliverOne");
         }
         LoadManager::PeerContext loadCtx(mApp, mPeerID);
         mLastWrite = mApp.getClock().now();
@@ -383,8 +400,9 @@ LoopbackPeerConnection::LoopbackPeerConnection(Application& initiator,
     mAcceptor->startIdleTimer();
 
     auto init = mInitiator;
-    mInitiator->getApp().getClock().getIOService().post(
-        [init]() { init->connectHandler(asio::error_code()); });
+    mInitiator->getApp().postOnMainThread(
+        [init]() { init->connectHandler(asio::error_code()); },
+        "LoopbackPeer: connect");
 }
 
 LoopbackPeerConnection::~LoopbackPeerConnection()

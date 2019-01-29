@@ -48,6 +48,10 @@ std::vector<std::string>
 findfiles(std::string const& path,
           std::function<bool(std::string const& name)> predicate);
 
+size_t size(std::ifstream& ifs);
+
+size_t size(std::string const& path);
+
 class PathSplitter
 {
   public:
@@ -85,5 +89,8 @@ std::string remoteName(std::string const& type, std::string const& hexStr,
 void checkGzipSuffix(std::string const& filename);
 
 void checkNoGzipSuffix(std::string const& filename);
+
+// returns the maximum number of connections that can be done at the same time
+int getMaxConnections();
 }
 }

@@ -11,16 +11,14 @@
 #include "util/GlobalChecks.h"
 #include "util/Logging.h"
 #include "util/Timer.h"
-#include "util/make_unique.h"
 #include "util/types.h"
 
 #include "bucket/BucketManager.h"
 #include "herder/HerderPersistence.h"
-#include "ledger/AccountFrame.h"
-#include "ledger/DataFrame.h"
-#include "ledger/LedgerHeaderFrame.h"
-#include "ledger/OfferFrame.h"
-#include "ledger/TrustFrame.h"
+#include "herder/Upgrades.h"
+#include "history/HistoryManager.h"
+#include "ledger/LedgerHeaderUtils.h"
+#include "ledger/LedgerTxn.h"
 #include "main/ExternalQueue.h"
 #include "main/PersistentState.h"
 #include "overlay/BanManager.h"
@@ -31,12 +29,15 @@
 #include "medida/metrics_registry.h"
 #include "medida/timer.h"
 
+#include <lib/soci/src/backends/sqlite3/soci-sqlite3.h>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <vector>
 
-extern "C" void register_factory_sqlite3();
+extern "C" int
+sqlite3_carray_init(sqlite_api::sqlite3* db, char** pzErrMsg,
+                    const sqlite_api::sqlite3_api_routines* pApi);
 
 #ifdef USE_POSTGRES
 extern "C" void register_factory_postgresql();
@@ -53,7 +54,7 @@ using namespace std;
 
 bool Database::gDriversRegistered = false;
 
-static unsigned long const SCHEMA_VERSION = 6;
+static unsigned long const SCHEMA_VERSION = 7;
 
 static void
 setSerializable(soci::session& sess)
@@ -81,7 +82,6 @@ Database::Database(Application& app)
           app.getMetrics().NewMeter({"database", "query", "exec"}, "query"))
     , mStatementsSize(
           app.getMetrics().NewCounter({"database", "memory", "statements"}))
-    , mEntryCache(4096)
     , mExcludedQueryTime(0)
     , mExcludedTotalTime(0)
     , mLastIdleQueryTime(0)
@@ -99,6 +99,11 @@ Database::Database(Application& app)
         // busy_timeout gives room for external processes
         // that may lock the database for some time
         mSession << "PRAGMA busy_timeout = 10000";
+
+        // Register the sqlite carray() extension we use for bulk operations.
+        auto besqlite3 = dynamic_cast<soci::sqlite3_session_backend*>(
+            mSession.get_backend());
+        sqlite3_carray_init(besqlite3->conn_, nullptr, nullptr);
     }
     else
     {
@@ -111,42 +116,33 @@ Database::applySchemaUpgrade(unsigned long vers)
 {
     clearPreparedStatementCache();
 
+    soci::transaction tx(mSession);
     switch (vers)
     {
-    case 2:
-        HerderPersistence::dropAll(*this);
+    case 7:
+        Upgrades::dropAll(*this);
+        mSession << "ALTER TABLE accounts ADD buyingliabilities BIGINT "
+                    "CHECK (buyingliabilities >= 0)";
+        mSession << "ALTER TABLE accounts ADD sellingliabilities BIGINT "
+                    "CHECK (sellingliabilities >= 0)";
+        mSession << "ALTER TABLE trustlines ADD buyingliabilities BIGINT "
+                    "CHECK (buyingliabilities >= 0)";
+        mSession << "ALTER TABLE trustlines ADD sellingliabilities BIGINT "
+                    "CHECK (sellingliabilities >= 0)";
         break;
 
-    case 3:
-        DataFrame::dropAll(*this);
-        break;
-
-    case 4:
-        BanManager::dropAll(*this);
-        mSession << "CREATE INDEX scpquorumsbyseq ON scpquorums(lastledgerseq)";
-        break;
-
-    case 5:
-        try
-        {
-            mSession << "ALTER TABLE accountdata ADD lastmodified INT NOT NULL "
-                        "DEFAULT 0;";
-        }
-        catch (soci::soci_error& e)
-        {
-            if (std::string(e.what()).find("lastmodified") == std::string::npos)
-            {
-                throw;
-            }
-        }
-        break;
-    case 6:
-        mSession << "ALTER TABLE peers ADD flags INT NOT NULL DEFAULT 0";
-        break;
     default:
-        throw std::runtime_error("Unknown DB schema version");
-        break;
+        if (vers <= 6)
+        {
+            throw std::runtime_error(
+                "Database version is too old, must use at least 7");
+        }
+        else
+        {
+            throw std::runtime_error("Unknown DB schema version");
+        }
     }
+    tx.commit();
 }
 
 void
@@ -291,17 +287,20 @@ Database::initialize()
 
     // only time this section should be modified is when
     // consolidating changes found in applySchemaUpgrade here
-    AccountFrame::dropAll(*this);
-    OfferFrame::dropAll(*this);
-    TrustFrame::dropAll(*this);
+    mApp.getLedgerTxnRoot().dropAccounts();
+    mApp.getLedgerTxnRoot().dropOffers();
+    mApp.getLedgerTxnRoot().dropTrustLines();
     OverlayManager::dropAll(*this);
     PersistentState::dropAll(*this);
     ExternalQueue::dropAll(*this);
-    LedgerHeaderFrame::dropAll(*this);
+    LedgerHeaderUtils::dropAll(*this);
     TransactionFrame::dropAll(*this);
     HistoryManager::dropAll(*this);
-    BucketManager::dropAll(mApp);
-    putSchemaVersion(1);
+    mApp.getBucketManager().dropAll();
+    HerderPersistence::dropAll(*this);
+    mApp.getLedgerTxnRoot().dropData();
+    BanManager::dropAll(*this);
+    putSchemaVersion(6);
 }
 
 soci::session&
@@ -327,7 +326,7 @@ Database::getPool()
         size_t n = std::thread::hardware_concurrency();
         LOG(INFO) << "Establishing " << n << "-entry connection pool to: "
                   << removePasswordFromConnectionString(c.value);
-        mPool = make_unique<soci::connection_pool>(n);
+        mPool = std::make_unique<soci::connection_pool>(n);
         for (size_t i = 0; i < n; ++i)
         {
             LOG(DEBUG) << "Opening pool entry " << i;
@@ -341,12 +340,6 @@ Database::getPool()
     }
     assert(mPool);
     return *mPool;
-}
-
-cache::lru_cache<std::string, std::shared_ptr<LedgerEntry const>>&
-Database::getEntryCache()
-{
-    return mEntryCache;
 }
 
 class SQLLogContext : NonCopyable
